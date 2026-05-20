@@ -1,6 +1,6 @@
 ---
 name: jira-estimate
-version: 2.0.0
+version: 2.1.0
 description: "Pre-read and estimate Jira tickets for grooming. Accepts one or more WOLF ticket keys or URLs. Use when asked to groom, estimate, or size tickets."
 argument-hint: "[WOLF-XXXX] [WOLF-YYYY] ..."
 allowed-tools: mcp__atlassian__getJiraIssue mcp__atlassian__searchJiraIssuesUsingJql mcp__atlassian__getJiraIssueTypeMetaWithFields Read Edit Agent
@@ -75,11 +75,26 @@ From the ticket text, extract every named artifact:
 - Apex classes, triggers, flows, fields, objects, validation rules, permission sets, custom labels, LWC components
 - Any named process or integration (e.g. "the trade lane sync", "the opportunity close flow")
 
-### 3c. Codebase blast radius search
+### 3c. Find comparable completed tickets
+
+Before searching the codebase, search Jira for completed tickets similar to this one. This is the fastest way to anchor the estimate.
+
+Call `mcp__atlassian__searchJiraIssuesUsingJql` with a query like:
+```
+project = WOLF AND summary ~ "[keyword from ticket]" AND status in ("Done", "Deployment Ready") AND "Story Points" is not EMPTY ORDER BY updated DESC
+```
+
+Try 2-3 different keyword combinations if the first returns nothing. If you find a comparable ticket, note its SP and use it as a reference point when estimating. A ticket that is structurally similar but simpler should be estimated higher than it; one that is simpler than the comparable should be estimated lower.
+
+### 3d. Codebase blast radius search
 
 Spawn a `feature-dev:codebase-explorer` agent with this brief:
 
-> "Search the Salesforce repo at `[project root]/unpackaged/main/default/` (locate the project root by finding `sfdx-project.json`). I need the blast radius for the following artifacts: [list from 3b].
+> "Search the Salesforce repo. First locate the project root by running: `find ~ -maxdepth 5 -name "sfdx-project.json" 2>/dev/null | head -1 | xargs dirname`
+>
+> Search under `[project root]/unpackaged/main/default/`. If you don't find the artifacts there, also check the `stage` branch: `git show origin/stage:unpackaged/main/default/[path]`.
+>
+> I need the blast radius for the following artifacts: [list from 3b].
 >
 > For each artifact:
 > - Hop 1: find every file that directly references it (Apex classes, triggers, flows, validation rules, page layouts).
@@ -87,11 +102,11 @@ Spawn a `feature-dev:codebase-explorer` agent with this brief:
 > - Stop if you reach any of these files — flag them and do not follow further: MetadataTriggerHandler.cls, TriggerBase.cls, GeneralUtil.cls, AccountService.cls, SObjectUnitOfWork.cls, CustomLabels.labels-meta.xml, any *Selector.cls.
 > - Also check: does a similar change exist in the codebase that we can use as a pattern? If so, name it.
 >
-> Return: a flat list of affected files per artifact, any risky file hits, and any existing pattern matches."
+> Return: a flat list of affected files per artifact, which branch they were found on, any risky file hits, and any existing pattern matches."
 
 Use the agent's findings to populate hidden complexity and calibrate the estimate.
 
-### 3d. Analyze
+### 3e. Analyze
 
 Identify:
 - What needs to be built, not why the business wants it
@@ -102,7 +117,7 @@ Identify:
 - Whether validation rules follow the required formula prefix: `!$Permission.Bypass_Validation_Rules &&`
 - Whether test coverage is straightforward or requires complex `TDF.createSObject(...)` setup with cross-object dependencies
 
-### 3e. Estimate
+### 3f. Estimate
 
 Provide:
 - SP estimate from the scale in sizing-guide.md
@@ -125,8 +140,15 @@ For each ticket:
 ```
 ## WOLF-XXXX — [Title]
 
-**What's being asked**
-[1-3 sentences — what needs to be built]
+**What's being built**
+Plain language. No jargon. Explain what the screen/feature does today, what changes, and what the user will experience differently. Use before/after examples where the ticket involves logic or UI changes. This should make sense to someone who hasn't read the ticket.
+
+**What's being asked (technical)**
+[1-3 sentences — the actual implementation work]
+
+**Comparable tickets**
+[e.g. Similar to WOLF-3885 (Account Plan MCP write, 3 SP, Done) — this ticket is more complex because of LeanData rules]
+(or: No comparable tickets found)
 
 **Unclear / needs clarification**
 - [Specific question 1]
@@ -137,9 +159,10 @@ For each ticket:
 - [e.g. Field referenced in 4 Apex classes and 2 validation rules — found via codebase search]
 - [e.g. Touches AccountService.cls, a risky file — confidence capped at Medium]
 - [e.g. Existing pattern in WOLF-3833 can be reused]
+- [e.g. Artifacts found on stage branch, not main — not yet in prod]
 
 **Estimate**: X SP — Confidence: High/Medium/Low
-**Reasoning**: [2-3 sentences, grounded in findings]
+**Reasoning**: [2-3 sentences, grounded in findings and comparable tickets]
 **Risks**: [What could push this higher]
 ```
 
