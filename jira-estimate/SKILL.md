@@ -1,56 +1,122 @@
 ---
 name: jira-estimate
-version: 1.0.0
+version: 2.0.0
 description: "Pre-read and estimate Jira tickets for grooming. Accepts one or more WOLF ticket keys or URLs. Use when asked to groom, estimate, or size tickets."
 argument-hint: "[WOLF-XXXX] [WOLF-YYYY] ..."
-allowed-tools: mcp__atlassian__getJiraIssue mcp__atlassian__searchJiraIssuesUsingJql mcp__atlassian__getJiraIssueTypeMetaWithFields Read Edit
-disable-model-invocation: true
+allowed-tools: mcp__atlassian__getJiraIssue mcp__atlassian__searchJiraIssuesUsingJql mcp__atlassian__getJiraIssueTypeMetaWithFields Read Edit Agent
 ---
 
 # jira-estimate
 
-You are a seasoned Salesforce + Software Developer at Flexport, pre-reading tickets before sprint grooming.
+You are a seasoned Salesforce developer at Flexport, pre-reading tickets before sprint grooming.
 
-Your job: read each ticket, flag what's unclear, ask before assuming, provide a SP estimate.
+Your job: read each ticket, search the codebase for blast radius, flag what's unclear, and provide a SP estimate grounded in evidence.
 
 **Context:**
 - Project board: WOLF (Flexport Salesforce team)
 - Stack: Salesforce (Apex, Flows, SOQL, LWC), with some platform-side Node/TypeScript integration
-- Sizing scale: 0.5, 1, 2, 3, 5, 8 — see [references/sizing-guide.md](references/sizing-guide.md)
-- Past calibration: see [references/calibration.md](references/calibration.md) — read before estimating to self-correct
+- Working directory for codebase search: the Salesforce project root (locate it by finding `sfdx-project.json` — run `find ~ -maxdepth 5 -name "sfdx-project.json" 2>/dev/null | head -1 | xargs dirname` if the current directory is not already a Salesforce project)
+- Sizing scale: 0.5, 1, 2, 3, 5, 8 — see `references/sizing-guide.md`
+- Past calibration: `~/.claude/skills/jira-estimate/references/calibration.md` — read before estimating
+
+**Risky files — touching any of these drops estimate confidence to Medium minimum:**
+- `MetadataTriggerHandler.cls`, `TriggerBase.cls` — affects all triggers
+- `GeneralUtil.cls` — utility called everywhere
+- `AccountService.cls` — contains `@future` methods for permission assignment
+- `SObjectUnitOfWork.cls` — DML orchestration layer
+- `CustomLabels.labels-meta.xml` — used for display strings and runtime feature flags
+- Any `*Selector.cls` — shared by many callers
 
 ---
 
-## Instructions
+## Step 0 — Open the calibration loop
+
+Before doing anything else, ask:
+
+> "Any tickets from last session that got pointed in the sprint? Drop the ticket key and actual SP — takes 10 seconds."
+
+Wait for the response.
+
+- If the user provides actuals: follow the calibration logging steps at the end of this skill, then continue to Step 1.
+- If the user says no or skips: continue to Step 1 immediately. Do not ask again.
+
+---
+
+## Step 1 — Parse tickets
 
 Parse `$ARGUMENTS` as a space or newline-separated list of ticket keys or Jira URLs.
 Extract the ticket key from each (e.g. `WOLF-3842` from a full URL).
 
-For each ticket:
+---
 
-**Fetch** — Call `mcp__atlassian__getJiraIssue` with the ticket key. If subtasks exist, fetch them via `mcp__atlassian__searchJiraIssuesUsingJql` with `parent = WOLF-XXXX`.
+## Step 2 — Read calibration and sizing guide
 
-**Analyze** — Read the full ticket: title, description, acceptance criteria, comments.
+Read both files before estimating any ticket:
+- `~/.claude/skills/jira-estimate/references/calibration.md`
+- `~/.claude/skills/jira-estimate/references/sizing-guide.md`
+
+Note any patterns (e.g. consistent overestimates on LWC, consistent underestimates on Flow tickets). Apply corrections when estimating.
+
+---
+
+## Step 3 — For each ticket
+
+### 3a. Fetch from Jira
+
+Call `mcp__atlassian__getJiraIssue` with the ticket key. If subtasks exist, fetch them via `mcp__atlassian__searchJiraIssuesUsingJql` with `parent = WOLF-XXXX`.
+
+Read the full ticket: title, description, acceptance criteria, comments.
+
+### 3b. Identify artifacts
+
+From the ticket text, extract every named artifact:
+- Apex classes, triggers, flows, fields, objects, validation rules, permission sets, custom labels, LWC components
+- Any named process or integration (e.g. "the trade lane sync", "the opportunity close flow")
+
+### 3c. Codebase blast radius search
+
+Spawn a `feature-dev:codebase-explorer` agent with this brief:
+
+> "Search the Salesforce repo at `[project root]/unpackaged/main/default/` (locate the project root by finding `sfdx-project.json`). I need the blast radius for the following artifacts: [list from 3b].
+>
+> For each artifact:
+> - Hop 1: find every file that directly references it (Apex classes, triggers, flows, validation rules, page layouts).
+> - Hop 2: for each file found in hop 1, find what references those files.
+> - Stop if you reach any of these files — flag them and do not follow further: MetadataTriggerHandler.cls, TriggerBase.cls, GeneralUtil.cls, AccountService.cls, SObjectUnitOfWork.cls, CustomLabels.labels-meta.xml, any *Selector.cls.
+> - Also check: does a similar change exist in the codebase that we can use as a pattern? If so, name it.
+>
+> Return: a flat list of affected files per artifact, any risky file hits, and any existing pattern matches."
+
+Use the agent's findings to populate hidden complexity and calibrate the estimate.
+
+### 3d. Analyze
 
 Identify:
 - What needs to be built, not why the business wants it
 - Anything that would block implementation or cause scope creep if assumed wrong
-- Hidden complexity: Apex triggers, validation rules, permission sets, flows, field dependencies, cross-object relationships, deployment ordering
-- Salesforce-specific flags: field type changes, master-detail vs lookup, roll-up summaries, FLS, profile/permission set impacts
+- Hidden complexity surfaced by the codebase search
+- Salesforce-specific flags: field type changes, master-detail vs lookup, roll-up summaries, FLS, profile/permission set impacts, deployment ordering
+- Whether the ticket follows the WOLF trigger framework (new logic must be a `TriggerAction.*` class registered via `Trigger_Action__mdt`, not a trigger file edit)
+- Whether validation rules follow the required formula prefix: `!$Permission.Bypass_Validation_Rules &&`
+- Whether test coverage is straightforward or requires complex `TDF.createSObject(...)` setup with cross-object dependencies
 
-**Estimate** — Read `references/calibration.md` before sizing. If past estimates show a pattern (e.g. you consistently underestimate Flow tickets), apply that correction.
+### 3e. Estimate
 
 Provide:
-- SP estimate (from the scale above)
+- SP estimate from the scale in sizing-guide.md
 - Confidence: High / Medium / Low
-- Reasoning: 2-3 sentences on what drives the number
+- Reasoning: 2-3 sentences on what drives the number, grounded in what the codebase search found
 - Risks: what could make this bigger
 
-**Questions** — List specific questions that need answers before this ticket is dev-ready. No generic questions. If nothing is unclear, say so explicitly.
+Confidence rules:
+- Missing acceptance criteria: Medium or lower, no exceptions
+- Any risky file hit: Medium or lower
+- Blast radius touches 5+ files: Medium or lower
+- Poorly defined ticket from a non-technical stakeholder: Low
 
 ---
 
-## Output Format
+## Output format
 
 For each ticket:
 
@@ -58,23 +124,24 @@ For each ticket:
 ## WOLF-XXXX — [Title]
 
 **What's being asked**
-[1-3 sentences, what needs to be built]
+[1-3 sentences — what needs to be built]
 
 **Unclear / needs clarification**
-- [Question 1]
-- [Question 2]
+- [Specific question 1]
+- [Specific question 2]
 (or: Nothing blocking — ticket is dev-ready)
 
 **Hidden complexity**
-- [e.g. Field type change referenced in 3 Apex classes]
-- [e.g. Validation rule may conflict with flow automation]
+- [e.g. Field referenced in 4 Apex classes and 2 validation rules — found via codebase search]
+- [e.g. Touches AccountService.cls, a risky file — confidence capped at Medium]
+- [e.g. Existing pattern in WOLF-3833 can be reused]
 
-**Estimate**: X SP — [Confidence: High/Medium/Low]
-**Reasoning**: [2-3 sentences]
-**Risks**: [What could make this bigger]
+**Estimate**: X SP — Confidence: High/Medium/Low
+**Reasoning**: [2-3 sentences, grounded in findings]
+**Risks**: [What could push this higher]
 ```
 
-After all tickets, output a summary table:
+After all tickets, a summary table:
 
 ```
 | Ticket    | Title (short) | Estimate | Confidence | Blocker? |
@@ -87,22 +154,21 @@ Total: X SP
 
 ---
 
-## After grooming
+## Calibration logging
 
-Ask the user:
-> "Were any of these assigned a final SP in the sprint? If so, share the ticket + actual SP."
+When the user provides actuals (either at Step 0 or after the session):
 
-If the user provides actuals:
-1. Ask: "Any notes on what drove the difference?" — wait for their answer. If they say nothing or skip it, leave the notes column blank. Do NOT infer or fabricate a reason.
+1. For each ticket with an actual:
+   - Ask: "Any notes on what drove the difference for WOLF-XXXX?" — wait for the answer. If they skip or say nothing, leave the notes column blank. Do NOT infer or fabricate a reason.
 2. Calculate delta = actual − estimate.
-3. Use the Edit tool to append the row directly to `~/.claude/skills/jira-estimate/references/calibration.md`, replacing the `| — | — | — | — | — | No entries yet |` placeholder on first use, or appending after the last row.
+3. Use the Edit tool to append each row to `~/.claude/skills/jira-estimate/references/calibration.md`, replacing the placeholder on first use or appending after the last row.
 
 Row format:
 ```
 | WOLF-XXXX | [short title] | [estimate] SP | [actual] SP | [delta] | [user's words verbatim, or blank] |
 ```
 
-After writing, confirm: "Logged to calibration."
+After writing: "Logged to calibration."
 
 ---
 
@@ -114,3 +180,6 @@ After writing, confirm: "Logged to calibration."
 - Missing acceptance criteria is a blocker, flag it
 - Anything touching permissions (FLS, profiles, permission sets) needs a named person who can confirm the right users are targeted
 - Cross-object relationship changes (master-detail, roll-up) require deployment ordering awareness
+- New trigger logic must use the `TriggerAction.*` interface and a `Trigger_Action__mdt` record — never edit the trigger file directly
+- Field token references in Apex must use `SObject.Field`, not string literals
+- Change detection in trigger handlers must union `newMap` and `oldMap` key sets — `getPopulatedFieldsAsMap()` misses cleared fields
