@@ -35,10 +35,10 @@ Before doing anything else:
 
 1. Read `~/.claude/skills/jira-estimate/references/calibration.md`.
 2. Find every row where the Actual column is blank or missing.
-3. For each such ticket, call `mcp__atlassian__getJiraIssue` and read the story points field.
-4. If story points are set in Jira, that is the actual. Calculate delta = actual − estimate.
-5. For each ticket where you found an actual, ask: "I pulled actuals from Jira — WOLF-XXXX was pointed at X SP (you estimated Y). Any notes on what drove the difference?" Wait for the answer. If they skip or say nothing, leave the notes column blank. Do NOT infer or fabricate a reason.
-6. Log all found actuals to calibration using the Edit tool (see Calibration logging section).
+3. For each such ticket, call `mcp__atlassian__getJiraIssue` and read `customfield_10008` (the WOLF board story points field).
+4. If story points are set in Jira, that is the actual. Calculate delta = actual − estimate. Log it immediately to calibration using the Edit tool — do not wait to ask. Leave the notes column blank for now.
+5. After logging, surface what you found: "Pulled actuals from Jira: WOLF-XXXX estimated X SP, actual Y SP (delta Z). Any notes on what drove the difference?" Wait for the answer. If they skip or say nothing, leave notes blank. Do NOT infer or fabricate a reason.
+6. If they provide notes, update the notes column in the calibration row you just wrote.
 
 If no unclosed tickets exist in the log, skip Step 0 silently and move on.
 
